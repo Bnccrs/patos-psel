@@ -8,6 +8,8 @@
 #include <sys/socket.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#include <netinet/ip.h>
+#include <arpa/inet.h>
 
 // Função para alocar uma interface TUN
 int alocar_tun(char *dev) {
@@ -35,4 +37,66 @@ int alocar_tun(char *dev) {
 
     strcpy(dev, ifr.ifr_name); // Copia o nome que o linux deu pra interface criada para a variável 'dev' (isso se o usuário não deu um nome específico)
     return fd; // Retorna o "File Descriptor" que é o ID da interface criada
+}
+
+// Entrada principal do programa recebendo parâmetros
+int main(int argc, char *argv[]) {
+    // Aloca um vetor de caracteres para definir o nome da interface
+    // Define "tun0" como o nome padrão da interface virtual.
+    char tun_name[IFNAMSIZ] = "tun0";
+    
+    
+    int tun_fd; // Variável para armazenar o fd
+    
+    unsigned char buffer[1500]; // Define um buffer de 1500 bytes para os pacotes IP
+    
+   
+    int nread; // Armazena a quantidade de bytes lidos a cada pacote entregue pelo sistema operacional
+
+    
+    if (argc > 1) { // Verifica se o usuário passou um argumento ao executar 
+        strncpy(tun_name, argv[1], IFNAMSIZ - 1); // Copia o nome informado para tun_name pra não dar overflow
+    }
+
+    tun_fd = alocar_tun(tun_name); // Chama a função pra criar a TUN e retorna o FD para a variável tun_fd
+    
+    if (tun_fd < 0) { // Verifica se deu algum erro na criação da TUN (fd negativo)
+        // Exibe a mensagem de erro e fecha o processo.
+        fprintf(stderr, "Erro ao alocar interface %s\n", tun_name);
+        exit(1);
+    }
+
+    // Se deu certinho, confirma no terminal a criação da interface e exibe o número do File Descriptor obtido
+    printf("Interface %s inicializada com sucesso (File Descriptor: %d)\n", tun_name, tun_fd);
+    printf("Aguardando pacotes enviados pelo Kernel...\n");
+
+    // Loop infinito para o I/O de pacotes no Userspace.
+    while (1) {
+        nread = read(tun_fd, buffer, sizeof(buffer)); // A função read() retorna a quantidade de bytes lidos e armazena no buffer.
+        
+        if (nread < 0) { // Se a leitura retornar valor negativo, ocorreu um erro, então ele fecha a interface.
+            perror("Erro ao ler da interface TUN");
+            close(tun_fd); // Libera o File Descriptor no sistema operacional antes de fechar.
+            exit(1);
+        }
+
+  
+        struct iphdr *iph = (struct iphdr *) buffer; // Pointer Casting, ele converte o buffer em ipv4 (struct iphdr)
+
+        if (iph->version == 4) { // filtra apenas pacotes IPv4, ignorando outros protocolos (ex: IPv6, ARP, etc)
+            // Arrays temporários para guardar os endereços IP convertidos em texto (INET_ADDRSTRLEN = tamanho de 16 bytes para IPv4)
+            char src_ip[INET_ADDRSTRLEN];
+            char dst_ip[INET_ADDRSTRLEN];
+
+            inet_ntop(AF_INET, &(iph->saddr), src_ip, INET_ADDRSTRLEN); // Converte os 32 bits do IP de origem (saddr = Source IP) para string.
+            
+            inet_ntop(AF_INET, &(iph->daddr), dst_ip, INET_ADDRSTRLEN);// Converte os 32 bits do IP de destino (daddr = Destination IP) para string.
+
+            printf("[SIMPLETUN] Lidos %d bytes | %s -> %s | Proto: %d\n", // printa no terminal a quantidade de bytes lidos, o IP de origem
+                   nread, src_ip, dst_ip, iph->protocol);                 // o IP de destino e o protocolo do pacote
+        }
+    }
+
+    close(tun_fd);
+    return 0;
 }
