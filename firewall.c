@@ -110,20 +110,55 @@ int main(int argc, char *argv[]) {
             exit(1);
         }
 
-  
         struct iphdr *iph = (struct iphdr *) buffer; // Pointer Casting, ele converte o buffer em ipv4 (struct iphdr)
 
-        if (iph->version == 4) { // filtra apenas pacotes IPv4, ignorando outros protocolos (ex: IPv6, ARP, etc)
+        if (iph->version == 4) { // Filtra apenas pacotes IPv4, ignorando outros protocolos (ex: IPv6, ARP, etc)
             // Arrays temporários para guardar os endereços IP convertidos em texto (INET_ADDRSTRLEN = tamanho de 16 bytes para IPv4)
             char src_ip[INET_ADDRSTRLEN];
             char dst_ip[INET_ADDRSTRLEN];
 
             inet_ntop(AF_INET, &(iph->saddr), src_ip, INET_ADDRSTRLEN); // Converte os 32 bits do IP de origem (saddr = Source IP) para string.
-            
-            inet_ntop(AF_INET, &(iph->daddr), dst_ip, INET_ADDRSTRLEN);// Converte os 32 bits do IP de destino (daddr = Destination IP) para string.
+            inet_ntop(AF_INET, &(iph->daddr), dst_ip, INET_ADDRSTRLEN); // Converte os 32 bits do IP de destino (daddr = Destination IP) para string.
 
-            printf("[SIMPLETUN] Lidos %d bytes | %s -> %s | Proto: %d\n", // printa no terminal a quantidade de bytes lidos, o IP de origem
-                   nread, src_ip, dst_ip, iph->protocol);                 // o IP de destino e o protocolo do pacote
+            // Regra de Bloqueio (DROP): verifica se o IP de destino é o 10.0.0.50
+            if (strcmp(dst_ip, "10.0.0.50") == 0) { // Se o IP de destino for igual a 10.0.0.50
+                printf("[DROP] Pacote destinado a %s foi descartado pelo firewall!\n", dst_ip); // Exibe a mensagem de que o pacote foi descartado
+                continue; // Pula o restante do loop sem responder ou reescrever o pacote (descarta da memória)
+            }
+
+            // Exibe os pacotes permitidos que passaram pelo filtro de bloqueio
+            printf("[PERMITIDO] Lidos %d bytes | %s -> %s | Proto: %d\n",  // Exibe no terminal os pacotes permitidos
+                   nread, src_ip, dst_ip, iph->protocol);
+
+            // Regra de resposta ao PING: verifica se o pacote permitido é do protocolo ICMP
+            if (iph->protocol == IPPROTO_ICMP) {
+                int ip_hdr_len = iph->ihl * 4; // Calcula o tamanho real do cabeçalho IP em bytes (ihl * 4)
+
+                // Mapeia a estrutura do ICMP apontando para a posição da memória logo após o cabeçalho IP
+                struct icmphdr *icmph = (struct icmphdr *)(buffer + ip_hdr_len);
+
+                // Verifica se o pacote é uma solicitação de PING (ICMP Echo Request - Tipo 8)
+                if (icmph->type == ICMP_ECHO) {
+                    icmph->type = ICMP_ECHOREPLY; // Altera o tipo da mensagem de Requisição (8) para Resposta (0 = ICMP Echo Reply)
+                    icmph->checksum = 0; // Zera o checksum do ICMP antes de recalcular
+
+                    int icmp_len = nread - ip_hdr_len; // Recalcula o checksum do ICMP considerando apenas o tamanho total menos a parte do IP
+                    icmph->checksum = calcular_checksum((unsigned short *)icmph, icmp_len); // Recalcula o checksum do ICMP após alterar o tipo da mensagem
+
+                    // Inverte os endereços IP (o IP de destino vira a origem e a origem vira o destino)
+                    uint32_t temp_ip = iph->saddr;
+                    iph->saddr = iph->daddr;
+                    iph->daddr = temp_ip;
+
+                    // Zera e recalcula o checksum do cabeçalho IP após alterar os endereços
+                    iph->check = 0;
+                    iph->check = calcular_checksum((unsigned short *)iph, ip_hdr_len);
+
+                    // Devolve o pacote modificado (resposta de PING) para o Kernel via interface TUN
+                    write(tun_fd, buffer, nread); // metodo write() envia o pacote de volta para o Kernel, que então encaminha para a rede
+                    printf("  └─> [ICMP REPLY] Resposta de PING enviada de volta para %s!\n", src_ip);
+                }
+            }
         }
     }
 
