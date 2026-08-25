@@ -12,6 +12,8 @@
 #include <netinet/ip_icmp.h> // Para manipulação de pacotes ICMP (ping)
 #include <arpa/inet.h> // Para conversão de endereços IP entre binário e string
 
+#define MAX_BLOCKED 100 // Define o tamanho máximo do array de IPs bloqueados
+
 // Função para alocar uma interface TUN
 int alocar_tun(char *dev) {
     struct ifreq ifr; // Variável para configurar a placa de rede
@@ -69,23 +71,37 @@ unsigned short calcular_checksum(unsigned short *ptr, int nbytes) {
     return answer;
 }
 
+
 // Entrada principal do programa recebendo parâmetros
 int main(int argc, char *argv[]) {
     // Aloca um vetor de caracteres para definir o nome da interface
     // Define "tun0" como o nome padrão da interface virtual.
     char tun_name[IFNAMSIZ] = "tun0";
     
-    
     int tun_fd; // Variável para armazenar o fd
     
     unsigned char buffer[1500]; // Define um buffer de 1500 bytes para os pacotes IP
     
-   
     int nread; // Armazena a quantidade de bytes lidos a cada pacote entregue pelo sistema operacional
 
-    
-    if (argc > 1) { // Verifica se o usuário passou um argumento ao executar 
-        strncpy(tun_name, argv[1], IFNAMSIZ - 1); // Copia o nome informado para tun_name pra não dar overflow
+    char blocked_ips[MAX_BLOCKED][INET_ADDRSTRLEN]; // Vetor para armazenar os IPs bloqueados dinamicamente
+
+    int blocked_count = 0; // Contador para o número de IPs bloqueados
+
+    // Varre os argumentos para capturar a flag --block e o nome da interface
+    for (int i = 1; i < argc; i++) { // Começa do índice 1 para ignorar o nome do programa (argv[0])
+        if (strcmp(argv[i], "--block") == 0 && i + 1 < argc) { // Verifica se a flag --block foi passada e se há um ip seguinte
+            if (blocked_count < MAX_BLOCKED) { // Verifica se ainda há espaço no array de IPs bloqueados
+                strncpy(blocked_ips[blocked_count], argv[i + 1], INET_ADDRSTRLEN - 1); // Copia o IP para o array de IPs bloqueados
+                blocked_ips[blocked_count][INET_ADDRSTRLEN - 1] = '\0'; // Garante que a string esteja terminada com '\0' para evitar overflow
+                printf("[CONFIG] IP Bloqueado adicionado: %s\n", blocked_ips[blocked_count]); // Confirma os ips bloqueados no terminal
+                blocked_count++; // Incrementa o contador de IPs bloqueados
+                i++; // Avança para o próximo argumento (pula o valor do IP)
+            }
+        } else if (argv[i][0] != '-') {
+            // Se o argumento não for uma flag, assume que é o nome da interface 
+            strncpy(tun_name, argv[i], IFNAMSIZ - 1);
+        }
     }
 
     tun_fd = alocar_tun(tun_name); // Chama a função pra criar a TUN e retorna o FD para a variável tun_fd
@@ -120,10 +136,17 @@ int main(int argc, char *argv[]) {
             inet_ntop(AF_INET, &(iph->saddr), src_ip, INET_ADDRSTRLEN); // Converte os 32 bits do IP de origem (saddr = Source IP) para string.
             inet_ntop(AF_INET, &(iph->daddr), dst_ip, INET_ADDRSTRLEN); // Converte os 32 bits do IP de destino (daddr = Destination IP) para string.
 
-            // Regra de Bloqueio (DROP): verifica se o IP de destino é o 10.0.0.50
-            if (strcmp(dst_ip, "10.0.0.50") == 0) { // Se o IP de destino for igual a 10.0.0.50
-                printf("[DROP] Pacote destinado a %s foi descartado pelo firewall!\n", dst_ip); // Exibe a mensagem de que o pacote foi descartado
-                continue; // Pula o restante do loop sem responder ou reescrever o pacote (descarta da memória)
+            int is_blocked = 0; // Regra de Bloqueio (contador) para verificar se o IP de destino está na lista de bloqueio
+            for (int i = 0; i < blocked_count; i++) { // Confere se o IP de destino está na lista de bloqueio
+                if (strcmp(dst_ip, blocked_ips[i]) == 0) {
+                    is_blocked = 1;
+                    break;
+                }
+            }
+
+            if (is_blocked) { // Se o IP tiver bloqueado, passa pro próximo pacote sem enviar para o Kernel
+                printf("[DROP] Pacote destinado a %s foi descartado pelo firewall!\n", dst_ip); // Mensagem de log
+                continue; // Descarta o pacote e volta pro topo do loop
             }
 
             // Exibe os pacotes permitidos que passaram pelo filtro de bloqueio
