@@ -2,14 +2,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <linux/if.h>
-#include <linux/if_tun.h>
-#include <netinet/ip.h>
-#include <arpa/inet.h>
+#include <unistd.h> // Para funções de I/O e manipulação de arquivos
+#include <fcntl.h> // Para manipulação de arquivos (open, close, etc)
+#include <sys/ioctl.h>  // Para manipulação de dispositivos de rede (ioctl)
+#include <sys/socket.h> // Para manipulação de sockets
+#include <linux/if.h> // Para manipulação de interfaces de rede
+#include <linux/if_tun.h> // Para manipulação de interfaces TUN/TAP
+#include <netinet/ip.h> // Para manipulação de pacotes IP
+#include <netinet/ip_icmp.h> // Para manipulação de pacotes ICMP (ping)
+#include <arpa/inet.h> // Para conversão de endereços IP entre binário e string
 
 // Função para alocar uma interface TUN
 int alocar_tun(char *dev) {
@@ -37,6 +38,35 @@ int alocar_tun(char *dev) {
 
     strcpy(dev, ifr.ifr_name); // Copia o nome que o linux deu pra interface criada para a variável 'dev' (isso se o usuário não deu um nome específico)
     return fd; // Retorna o "File Descriptor" que é o ID da interface criada
+}
+
+// Checksum para pacotes IPv4
+// Função que calcula a verificação de integridade dos pacotes IPv4, retornando o valor do checksum
+unsigned short calcular_checksum(unsigned short *ptr, int nbytes) {
+    long sum = 0;           // Acumulador de 32 bits para evitar overflow durante a soma
+    unsigned short oddbyte; // Variável temporária para tratar pacotes com número ímpar de bytes
+    short answer;           // Resultado final comprimido em 16 bits
+
+    // Loop para somar os bytes do buffer em pares de 16 bits
+    while (nbytes > 1) {
+        sum += *ptr++;
+        nbytes -= 2;
+    }
+
+    // Se sobrou 1 byte isolado no final, ajusta e soma ao total
+    if (nbytes == 1) {
+        oddbyte = 0;
+        *((unsigned char*)&oddbyte) = *(unsigned char*)ptr;
+        sum += oddbyte;
+    }
+
+    // Dobra os bits excedentes de 32 bits de volta para 16 bits (soma de complemento de 1)
+    sum = (sum >> 16) + (sum & 0xffff);
+    sum += (sum >> 16);
+
+    // Inverte todos os bits (~sum) e retorna o checksum final
+    answer = (short)~sum;
+    return answer;
 }
 
 // Entrada principal do programa recebendo parâmetros
