@@ -1,4 +1,7 @@
 // Bibliotecas padrão do C e cabeçalhos do Kernel Linux para manipulação de rede
+#define _GNU_SOURCE // varre o payload do pacote IP e permite o uso de funções GNU específicas do linux
+#define MAX_BLOCKED 100 // Define o tamanho máximo do array de IPs bloqueados
+#define MAX_WORDS 100 // Define o tamanho máximo do array de palavras bloqueadas
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,8 +14,8 @@
 #include <netinet/ip.h> // Para manipulação de pacotes IP
 #include <netinet/ip_icmp.h> // Para manipulação de pacotes ICMP (ping)
 #include <arpa/inet.h> // Para conversão de endereços IP entre binário e string
-
-#define MAX_BLOCKED 100 // Define o tamanho máximo do array de IPs bloqueados
+#include <netinet/tcp.h> // Para manipulação de pacotes TCP
+#include <netinet/udp.h> // Para manipulação de pacotes UDP 
 
 // Função para alocar uma interface TUN
 int alocar_tun(char *dev) {
@@ -86,9 +89,13 @@ int main(int argc, char *argv[]) {
 
     char blocked_ips[MAX_BLOCKED][INET_ADDRSTRLEN]; // Vetor para armazenar os IPs bloqueados dinamicamente
 
+    char blocked_words[MAX_WORDS][256]; // Vetor para armazenar as palavras bloqueadas dinamicamente
+
     int blocked_count = 0; // Contador para o número de IPs bloqueados
 
-    // Varre os argumentos para capturar a flag --block e o nome da interface
+    int count_words = 0; // Contador para o número de palavras bloqueadas
+
+    // Varre os argumentos para capturar as flags --block, --word e o nome da interface
     for (int i = 1; i < argc; i++) { // Começa do índice 1 para ignorar o nome do programa (argv[0])
         if (strcmp(argv[i], "--block") == 0 && i + 1 < argc) { // Verifica se a flag --block foi passada e se há um ip seguinte
             if (blocked_count < MAX_BLOCKED) { // Verifica se ainda há espaço no array de IPs bloqueados
@@ -98,6 +105,14 @@ int main(int argc, char *argv[]) {
                 blocked_count++; // Incrementa o contador de IPs bloqueados
                 i++; // Avança para o próximo argumento (pula o valor do IP)
             }
+        } else if (strcmp(argv[i], "--word") == 0 && i + 1 < argc) { // Verifica se a flag --word foi passada e se há uma palavra seguinte
+            if (count_words < MAX_WORDS) { // Verifica se ainda há espaço no array de palavras bloqueadas
+                strncpy(blocked_words[count_words], argv[i + 1], 255); // Copia a palavra para o array de palavras bloqueadas
+                blocked_words[count_words][255] = '\0'; // Garante que a string esteja terminada com '\0' para evitar overflow
+                printf("[CONFIG] Palavra Bloqueada adicionada: %s\n", blocked_words[count_words]); // Confirma as palavras bloqueadas no terminal
+                count_words++; // Incrementa o contador de palavras bloqueadas
+                i++; // Avança para o próximo argumento (pula o valor da palavra)
+            }    
         } else if (argv[i][0] != '-') {
             // Se o argumento não for uma flag, assume que é o nome da interface 
             strncpy(tun_name, argv[i], IFNAMSIZ - 1);
@@ -116,7 +131,7 @@ int main(int argc, char *argv[]) {
     printf("Interface %s inicializada com sucesso (File Descriptor: %d)\n", tun_name, tun_fd);
     printf("Aguardando pacotes enviados pelo Kernel...\n");
 
-    // Loop infinito para o I/O de pacotes no Userspace.
+// Loop infinito para o I/O de pacotes no Userspace.
     while (1) {
         nread = read(tun_fd, buffer, sizeof(buffer)); // A função read() retorna a quantidade de bytes lidos e armazena no buffer.
         
@@ -149,6 +164,44 @@ int main(int argc, char *argv[]) {
                 continue; // Descarta o pacote e volta pro topo do loop
             }
 
+            // Verifica se existem palavras cadastradas para filtragem e realiza a inspeção profunda de pacotes (DPI)
+            if (count_words > 0) { // Verifica se existem palavras cadastradas para filtragem
+                unsigned char *payload = NULL; // Ponteiro para apontar para o início dos dados do usuário
+                int payload_len = 0; // Tamanho dos dados do usuário em bytes
+                int ip_hdr_len = iph->ihl * 4; // Calcula o tamanho real do cabeçalho IP em byte
+
+                if (iph->protocol == IPPROTO_UDP) { // Pega o payload do UDP 
+                    int udp_hdr_len = sizeof(struct udphdr); // Define o tamanho fixo do cabeçalho UDP (8 bytes)
+                    payload = buffer + ip_hdr_len + udp_hdr_len; // Desloca o ponteiro passando IP e UDP
+                    payload_len = nread - ip_hdr_len - udp_hdr_len; // Calcula os bytes restantes do pacote
+                } 
+                
+                else if (iph->protocol == IPPROTO_TCP) { // Pega o payload do TCP
+                    struct tcphdr *tcph = (struct tcphdr *)(buffer + ip_hdr_len); // Mapeia o cabeçalho TCP
+                    int tcp_hdr_len = tcph->doff * 4; // tcph->doff indica o tamanho dinâmico do cabeçalho TCP
+                    payload = buffer + ip_hdr_len + tcp_hdr_len; // Desloca o ponteiro passando IP e TCP
+                    payload_len = nread - ip_hdr_len - tcp_hdr_len; // Calcula os bytes restantes do pacote
+                }
+
+                // Verifica se o payload não é nulo e se há dados para inspecionar
+                if (payload != NULL && payload_len > 0) {
+                    int word_found = 0; // Flag indicando se alguma palavra proibida foi encontrada
+                    for (int i = 0; i < count_words; i++) {
+                        // memmem() busca no buffer de memória binária a ocorrência exata da palavra
+                        if (memmem(payload, payload_len, blocked_words[i], strlen(blocked_words[i])) != NULL) {
+                            printf("[DROP - DPI] Palavra '%s' detectada em pacote (Proto: %d)! Descartando...\n", 
+                                   blocked_words[i], iph->protocol); // Mensagem de log indicando a palavra detectada e o protocolo do pacote
+                            word_found = 1;
+                            break;
+                        }
+                    }
+
+                    if (word_found) {
+                        continue; // Descarta o pacote contendo a palavra e volta pro topo do loop
+                    }
+                }
+            }
+            
             // Exibe os pacotes permitidos que passaram pelo filtro de bloqueio
             printf("[PERMITIDO] Lidos %d bytes | %s -> %s | Proto: %d\n",  // Exibe no terminal os pacotes permitidos
                    nread, src_ip, dst_ip, iph->protocol);
