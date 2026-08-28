@@ -15,7 +15,7 @@ Projeto de firewall funcional desenvolvido em espaço de usuário (*userspace*) 
 
 ## 📅 Diário de Desenvolvimento 
 
-Sintetizando... Em Breve...
+Comecei o projeto pesquisando sobre as ferramentas como TUN/TAP no linux (uso Ubuntu) e criando a estrutura de arquivos C (Bibliotecas) e Makefile (`chore`). Encontrei um tutorial (apontado em Fontes e Referências) que me ajudou a criar o método `alocar_tun` em `firewall.c` em um só arquivo e de forma simplificada. Após verificar o acesso ao arquivo `/dev/net/tun`, dei seguimento no método `main` e desenvolver essa parte me fez entender alguns fundamentos de Redes, como o que é um Buffer, como funciona cabeçalhos IPv4, Payload, Checksum, ICMP, verificações de palavras e diferença de pacotes TCP e UDP. Além do planejado pelo Processo Seletivo, implementei um sistema de flags ao executar o `./firewall` onde IPs bloqueados são marcados com `--block` e palavras proibidas que estão no payload são marcadas com `--word`.
 
 ---
 
@@ -51,3 +51,7 @@ echo "mensagem normal" | nc -u -w1 10.0.0.2 8080
 # 6. Teste de DPI - Envio de texto contendo palavra proibida (DROP)
 echo "mensagem contém virus" | nc -u -w1 10.0.0.2 8080
 ```
+## 📚 Fontes e Referências
+
+* [TunTap Interface Tutorial - Backreference](https://backreference.org/2010/03/26/tuntap-interface-tutorial/index.html)
+
